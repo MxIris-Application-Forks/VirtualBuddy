@@ -186,7 +186,7 @@ public final class VMController: ObservableObject {
             virtualMachineModel.metadata.installFinished = true
         }
     }
-    
+
     public func pause() async throws {
         try await updatingState {
             let instance = try ensureInstance()
