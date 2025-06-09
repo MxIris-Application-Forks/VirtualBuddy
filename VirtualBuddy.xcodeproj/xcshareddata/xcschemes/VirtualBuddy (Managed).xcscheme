@@ -52,6 +52,14 @@
       </BuildableProductRunnable>
       <CommandLineArguments>
          <CommandLineArgument
+            argument = "-VerboseUILoggingEnabled YES"
+            isEnabled = "YES">
+         </CommandLineArgument>
+         <CommandLineArgument
+            argument = "-WHVerbosePacketLogging YES"
+            isEnabled = "YES">
+         </CommandLineArgument>
+         <CommandLineArgument
             argument = "-VBAPIEnvironment local"
             isEnabled = "NO">
          </CommandLineArgument>
@@ -66,10 +74,6 @@
          <CommandLineArgument
             argument = "-VBForceBuiltInSoftwareCatalog YES"
             isEnabled = "NO">
-         </CommandLineArgument>
-         <CommandLineArgument
-            argument = "-WHVerbosePacketLogging YES"
-            isEnabled = "YES">
          </CommandLineArgument>
          <CommandLineArgument
             argument = "-VBSimulateInstall YES"
@@ -89,11 +93,19 @@
          </CommandLineArgument>
          <CommandLineArgument
             argument = "-VBSimulateMobileDeviceVersion 1770.0.0"
-            isEnabled = "YES">
+            isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
-            argument = "-VerboseUILoggingEnabled YES"
-            isEnabled = "YES">
+            argument = "-VBForceSigningStatusUnsigned YES"
+            isEnabled = "NO">
+         </CommandLineArgument>
+         <CommandLineArgument
+            argument = "-VBForceSigningStatusSigned YES"
+            isEnabled = "NO">
+         </CommandLineArgument>
+         <CommandLineArgument
+            argument = "-VBForceSigningStatusRequestFailed YES"
+            isEnabled = "NO">
          </CommandLineArgument>
       </CommandLineArguments>
    </LaunchAction>
