@@ -68,9 +68,6 @@ public struct VirtualMachineSessionView: View {
             .onReceive(ui.setWindowAspectRatio) { ratio in
                 vbWindow?.applyAspectRatio(ratio)
             }
-            .onReceive(screenshotTaken) { data in
-                controller.storeScreenshot(with: data)
-            }
             .onReceive(ui.makeWindowKey) {
                 window?.makeKeyAndOrderFront(nil)
             }
@@ -88,16 +85,24 @@ public struct VirtualMachineSessionView: View {
             startableStateView(with: nil)
         case .stopped(let error):
             startableStateView(with: error)
-        case .starting:
-            ProgressView()
+        case .starting(let message):
+            VStack(spacing: 12) {
+                ProgressView()
+
+                if let message {
+                    Text(message)
+                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 400)
+                }
+            }
         case .running(let vm):
             vmView(with: vm)
         case .paused(let vm), .savingState(let vm), .restoringState(let vm, _), .stateSaveCompleted(let vm, _):
             pausedView(with: vm)
         }
     }
-
-    private let screenshotTaken = VMScreenshotter.Subject()
 
     @ViewBuilder
     private func vmView(with vm: VZVirtualMachine) -> some View {
@@ -106,8 +111,7 @@ public struct VirtualMachineSessionView: View {
             captureSystemKeys: controller.virtualMachineModel.configuration.captureSystemKeys,
             isDFUModeVM: controller.options.bootInDFUMode,
             vmECID: controller.virtualMachineModel.ECID,
-            automaticallyReconfiguresDisplay: .constant(controller.virtualMachineModel.configuration.hardware.displayDevices.count > 0 ? controller.virtualMachineModel.configuration.hardware.displayDevices[0].automaticallyReconfiguresDisplay : false),
-            screenshotSubject: screenshotTaken
+            automaticallyReconfiguresDisplay: .constant(controller.virtualMachineModel.configuration.hardware.displayDevices.count > 0 ? controller.virtualMachineModel.configuration.hardware.displayDevices[0].automaticallyReconfiguresDisplay : false)
         )
     }
     
@@ -115,12 +119,6 @@ public struct VirtualMachineSessionView: View {
     private func pausedView(with vm: VZVirtualMachine) -> some View {
         ZStack {
             vmView(with: vm)
-
-            if case .restoringState(_, let package) = controller.state, let screenshot = package.screenshot {
-                Image(nsImage: screenshot)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            }
 
             Rectangle()
                 .foregroundStyle(Material.regular)
@@ -181,11 +179,10 @@ public struct VirtualMachineSessionView: View {
 
     @ViewBuilder
     private var backgroundView: some View {
-        if controller.isRunning {
-            Color.black
-        } else {
-            VMScreenshotBackgroundView(vm: $controller.virtualMachineModel, options: $controller.options)
-        }
+        VirtualMachineSessionBackgroundView(
+            content: controller.virtualMachineModel.blurHashBackgroundContent,
+            isRunning: controller.isRunning
+        )
     }
 
     private var confirmBeforeClosing: () async -> Bool {
@@ -211,46 +208,29 @@ public struct VirtualMachineSessionView: View {
 
 }
 
-struct VMScreenshotBackgroundView: View {
-    
-    @Binding var vm: VBVirtualMachine
-    @Binding var options: VMSessionOptions
+struct VirtualMachineSessionBackgroundView: View {
+    var content: BlurHashFullBleedBackground.Content
+    var isRunning: Bool
 
-    @State private var image: Image?
-    
     var body: some View {
         ZStack {
-            if let image {
-                image
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
+            Color.black
+
+            if !isRunning {
+                switch content {
+                case .blurHash(let token):
+                    BlurHashFullBleedBackground(blurHash: token)
+                        .fullBleedBackgroundBrightness(-0.2)
+                case .customImage(let image):
+                    BlurHashFullBleedBackground(image: image)
+                        .fullBleedBackgroundBrightness(-0.1)
+                        .fullBleedBackgroundSaturation(0.8)
+                }
+
+                Color.black.opacity(0.3)
             }
-            
-            MaterialView()
-                .materialType(.popover)
-                .materialBlendingMode(.withinWindow)
-                .materialState(.followsWindowActiveState)
-        }
-        .onAppearOnce { updateImage(options: options) }
-        .onReceive(vm.didInvalidateThumbnail) { updateImage(options: options) }
-        .onChange(of: options) { newOptions in
-            updateImage(options: newOptions)
         }
     }
-    
-    private func updateImage(options: VMSessionOptions) {
-        if let packageURL = options.stateRestorationPackageURL,
-           let package = try? VBSavedStatePackage(url: packageURL),
-           let screenshot = package.screenshot
-        {
-            image = Image(nsImage: screenshot)
-        } else if let screenshot = vm.screenshot {
-            image = Image(nsImage: screenshot)
-        } else {
-            image = nil
-        }
-    }
-    
 }
 
 struct VMCircularButtonStyle: ButtonStyle {
@@ -287,6 +267,16 @@ extension VMController {
     var isStopped: Bool {
         guard case .stopped = state else { return false }
         return true
+    }
+}
+
+extension VBVirtualMachine {
+    var blurHashBackgroundContent: BlurHashFullBleedBackground.Content {
+        if let thumbnail {
+            .customImage(thumbnail)
+        } else {
+            .blurHash(metadata.backgroundHash)
+        }
     }
 }
 

@@ -2,9 +2,12 @@ import Cocoa
 import SwiftUI
 import VirtualUI
 import VirtualWormhole
+import OSLog
 
 @NSApplicationMain
 final class GuestAppDelegate: NSObject, NSApplicationDelegate {
+
+    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Guest", category: "GuestAppDelegate")
 
     private lazy var launchAtLoginManager = GuestLaunchAtLoginManager()
 
@@ -55,6 +58,10 @@ final class GuestAppDelegate: NSObject, NSApplicationDelegate {
         dashboardItem.install()
 
         perform(#selector(showPanelForFirstLaunchIfNeeded), with: nil, afterDelay: 0.5)
+
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification, object: nil, queue: nil) { _ in
+            self.logger.notice("Received power off notification.")
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -74,6 +81,29 @@ final class GuestAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showPanel() {
         dashboardItem.showPanel()
+    }
+
+    private var startedDesktopPictureSendBeforeTermination = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        logger.debug(#function)
+
+        guard !startedDesktopPictureSendBeforeTermination else { return .terminateLater }
+        startedDesktopPictureSendBeforeTermination = true
+
+        Task {
+            logger.notice("Requesting WH send desktop picture")
+
+            try? await Task.sleep(for: .milliseconds(500))
+
+            await WormholeManager.sharedGuest.sendDesktopPicture()
+
+            try? await Task.sleep(for: .seconds(500))
+
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+
+        return .terminateLater
     }
 
 }

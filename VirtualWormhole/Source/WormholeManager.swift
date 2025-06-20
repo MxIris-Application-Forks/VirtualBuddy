@@ -49,7 +49,8 @@ public final class WormholeManager: NSObject, ObservableObject, WormholeMultiple
     let serviceTypes: [WormholeService.Type] = [
         WHSharedClipboardService.self,
         WHDarwinNotificationsService.self,
-        WHDefaultsImportService.self
+        WHDefaultsImportService.self,
+        WHDesktopPictureService.self
     ]
     
     var activeServices: [WormholeService] = []
@@ -277,9 +278,8 @@ public final class WormholeManager: NSObject, ObservableObject, WormholeMultiple
     }
 
     public func darwinNotifications(matching names: Set<String>, from peerID: WHPeerID) async throws -> AsyncStream<String> {
-        guard peers[peerID] != nil else {
-            throw CocoaError(.coderValueNotFound, userInfo: [NSLocalizedDescriptionKey: "Peer \(peerID) is not registered"])
-        }
+        try ensurePeerAvailable(peerID)
+        
         guard let notificationService = service(WHDarwinNotificationsService.self) else {
             throw CocoaError(.coderValueNotFound, userInfo: [NSLocalizedDescriptionKey: "Darwin notifications service not available"])
         }
@@ -296,6 +296,48 @@ public final class WormholeManager: NSObject, ObservableObject, WormholeMultiple
             .makeAsyncIterator()
 
         return AsyncStream { await iterator.next() }
+    }
+
+    public func desktopPictureMessages(from peerID: WHPeerID) async throws -> AsyncStream<DesktopPictureMessage> {
+        try ensurePeerAvailable(peerID)
+
+        guard let desktopPictureService = service(WHDesktopPictureService.self) else {
+            throw CocoaError(.coderValueNotFound, userInfo: [NSLocalizedDescriptionKey: "Desktop picture service not available"])
+        }
+
+        try Task.checkCancellation()
+
+        var iterator = desktopPictureService.onPeerPeerDesktopPictureReceived.values
+            .filter { $0.peerID == peerID }
+            .map(\.message)
+            .makeAsyncIterator()
+
+        return AsyncStream { await iterator.next() }
+    }
+
+    /// Can be called on the guest to force-send the current desktop picture.
+    public func sendDesktopPicture() async {
+        guard side == .guest else { return }
+
+        do {
+            guard let desktopPictureService = service(WHDesktopPictureService.self) else {
+                throw CocoaError(.coderValueNotFound, userInfo: [NSLocalizedDescriptionKey: "Desktop picture service not available"])
+            }
+
+            logger.debug("Sending desktop picture")
+
+            await desktopPictureService.sendDesktopPicture()
+
+            logger.debug("Finished sending desktop picture")
+        } catch {
+            logger.error("Send desktop picture failed - \(error, privacy: .public)")
+        }
+    }
+
+    private func ensurePeerAvailable(_ peerID: WHPeerID) throws {
+        guard peers[peerID] != nil else {
+            throw CocoaError(.coderValueNotFound, userInfo: [NSLocalizedDescriptionKey: "Peer \(peerID) is not registered"])
+        }
     }
 
     // MARK: - Guest Mode

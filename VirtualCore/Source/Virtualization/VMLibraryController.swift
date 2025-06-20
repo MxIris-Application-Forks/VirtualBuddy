@@ -8,6 +8,7 @@
 import SwiftUI
 import Combine
 import OSLog
+import BuddyFoundation
 
 @MainActor
 public final class VMLibraryController: ObservableObject {
@@ -38,13 +39,19 @@ public final class VMLibraryController: ObservableObject {
     private let filePresenter: DirectoryObserver
     private let updateSignal = PassthroughSubject<URL, Never>()
 
+    private static let observedFileExtensions: Set<String> = [
+        VBVirtualMachine.bundleExtension,
+        "plist",
+        "heic"
+    ]
+
     public init(settingsContainer: VBSettingsContainer = .current) {
         self.settingsContainer = settingsContainer
         self.settings = settingsContainer.settings
         self.libraryURL = settingsContainer.settings.libraryURL
         self.filePresenter = DirectoryObserver(
             presentedItemURL: settingsContainer.settings.libraryURL,
-            fileExtensions: [VBVirtualMachine.bundleExtension],
+            fileExtensions: Self.observedFileExtensions,
             label: "Library",
             signal: updateSignal
         )
@@ -71,6 +78,8 @@ public final class VMLibraryController: ObservableObject {
     
     private lazy var fileManager = FileManager()
 
+    private var hasLoadedMachinesOnce = false
+
     private func bind() {
         settingsContainer.$settings.sink { [weak self] newSettings in
             self?.settings = newSettings
@@ -79,10 +88,31 @@ public final class VMLibraryController: ObservableObject {
 
         updateSignal
             .throttle(for: 0.1, scheduler: DispatchQueue.main, latest: true)
-            .sink { [weak self] _ in
-                self?.loadMachines()
+            .sink { [weak self] url in
+                guard let self else { return }
+
+                /// Ignore file change notifications in the guest additions or downloads directories.
+                guard !url.path.contains(GuestAdditionsDiskImage.imagesRootURL.path) else {
+                    return
+                }
+                guard !url.path.contains(VBSettings.current.downloadsDirectoryURL.path) else {
+                    return
+                }
+
+                guard let bundleURL = url.virtualMachineBundleParent else {
+                    self.logger.fault("Failed to determine VM bundle URL for changed file \(url.lastPathComponent)")
+                    return
+                }
+
+                self.handleBundleChanged(at: bundleURL)
             }
             .store(in: &cancellables)
+    }
+
+    private func handleBundleChanged(at bundleURL: URL) {
+        logger.debug("Bundle changed: \(bundleURL.lastPathComponent)")
+
+        loadMachines()
     }
 
     public func loadMachines() {
@@ -93,23 +123,36 @@ public final class VMLibraryController: ObservableObject {
             return
         }
         
-        var vms = [VBVirtualMachine]()
-        
+        var machines = [VBVirtualMachine]()
+
         while let url = enumerator.nextObject() as? URL {
             guard url.pathExtension == VBVirtualMachine.bundleExtension else { continue }
             
             do {
-                let machine = try VBVirtualMachine(bundleURL: url)
-                
-                vms.append(machine)
+                let machine = try VBVirtualMachine(bundleURL: url, createIfNeeded: false)
+
+                if let index = machines.firstIndex(where: { $0.id == machine.id }) {
+                    machines[index] = machine
+                } else {
+                    machines.append(machine)
+                }
+            } catch is VBVirtualMachine.BundleDirectoryMissingError {
+                /// This error can occur when the bundle is deleted in Finder.
+                logger.debug("Ignoring BundleDirectoryMissingError for \(url.lastPathComponent)")
             } catch {
                 assertionFailure("Failed to construct VM model: \(error)")
             }
         }
 
-        vms.sort(by: { $0.bundleURL.creationDate > $1.bundleURL.creationDate })
-        
-        self.state = .loaded(vms)
+        let sortedMachines = machines.sorted(by: { $0.bundleURL.creationDate > $1.bundleURL.creationDate })
+
+        self.state = .loaded(sortedMachines)
+
+        if !hasLoadedMachinesOnce {
+            hasLoadedMachinesOnce = true
+
+            migrateBackgroundHashesForLegacyThumbnails()
+        }
     }
 
     public func reload(animated: Bool = true) {
@@ -173,6 +216,85 @@ public final class VMLibraryController: ObservableObject {
     /// Called when a `VMController` is dying so that we can cleanup our reference to it.
     nonisolated func removeController(_ controller: VMController) {
         coordinator.activeVMControllers[controller.id] = nil
+    }
+
+    // MARK: - Migration
+
+    private var alwaysAttemptLegacyThumbnailMigration: Bool {
+        #if DEBUG
+        UserDefaults.standard.bool(forKey: "VBAlwaysAttemptLegacyThumbnailMigration")
+        #else
+        false
+        #endif
+    }
+
+    private static let migratedLegacyThumbnailBackgroundHashesDefaultsKey = "migratedLegacyThumbnailBackgroundHashes_2"
+    private var migratedLegacyThumbnailBackgroundHashes: Bool {
+        get {
+            guard !alwaysAttemptLegacyThumbnailMigration else { return false }
+
+            return UserDefaults.standard.bool(forKey: Self.migratedLegacyThumbnailBackgroundHashesDefaultsKey)
+        }
+        set {
+            guard !alwaysAttemptLegacyThumbnailMigration else { return }
+
+            UserDefaults.standard.set(newValue, forKey: Self.migratedLegacyThumbnailBackgroundHashesDefaultsKey)
+        }
+    }
+
+    private func migrateBackgroundHashesForLegacyThumbnails() {
+        guard !migratedLegacyThumbnailBackgroundHashes else { return }
+
+        let machines = self.virtualMachines
+
+        /// Skip setting migration flag for empty machines in case user library has not been mounted yet.
+        guard !machines.isEmpty else { return }
+
+        defer {
+            migratedLegacyThumbnailBackgroundHashes = true
+        }
+
+        logger.debug("Generating missing background hashes for legacy thumbnails...")
+
+        Task {
+            let needingMigration = machines.filter { $0.configuration.systemType == .mac && $0.metadata.backgroundHash == .virtualBuddyBackground }
+            guard !needingMigration.isEmpty else {
+                logger.debug("Found no machines needing background hash migration.")
+                return
+            }
+
+            logger.debug("Found machines needing background hash migration: \(needingMigration.map(\.name).formatted(.list(type: .and)))")
+
+            for var machine in needingMigration {
+                do {
+                    guard let thumbnail = machine.thumbnailImage() else {
+                        logger.debug("Ignoring \(machine.name) for background hash migration because it doesn't have a thumbnail.")
+                        continue
+                    }
+
+                    if #available(macOS 15.0, *) {
+                        let isDRMProtectedBug = await thumbnail.detectDRMProtectedVideoBug()
+
+                        guard !isDRMProtectedBug else {
+                            logger.notice("Invalidating thumbnail for \(machine.name): detected \"DRM Protected Video\" bug in its thumbnail.")
+                            try machine.invalidateThumbnail()
+                            try machine.invalidateScreenshot()
+                            continue
+                        }
+                    }
+
+                    let hash = try thumbnail.blurHash(numberOfComponents: (.vbBlurHashSize, .vbBlurHashSize))
+                        .require("Background hash generation failed.")
+
+                    machine.metadata.backgroundHash = BlurHashToken(value: hash)
+                    try await MainActor.run { try machine.saveMetadata() }
+
+                    logger.info("Migrated background hash for \(machine.name)")
+                } catch {
+                    logger.warning("Error migrating background hash for \(machine.name) - \(error, privacy: .public)")
+                }
+            }
+        }
     }
 
 }
