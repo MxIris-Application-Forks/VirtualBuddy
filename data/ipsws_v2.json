@@ -274,6 +274,18 @@
   ],
   "restoreImages" : [
     {
+      "build" : "26A5378n",
+      "channel" : "devbeta",
+      "downloadSize" : 22590067379,
+      "group" : "goldengate",
+      "id" : "26A5378n",
+      "mobileDeviceMinVersion" : "1853.0.0",
+      "name" : "macOS 27.0 Developer Beta 3 v.2",
+      "requirements" : "min_host_26_virtual_installation",
+      "url" : "https:\/\/updates.cdn-apple.com\/2026SummerSeed\/fullrestores\/140-37973\/1ACA049C-10F0-4F1D-8E38-E52B9168C4BC\/UniversalMac_27.0_26A5378n_Restore.ipsw",
+      "version" : "27.0.0"
+    },
+    {
       "build" : "26A5378j",
       "channel" : "devbeta",
       "downloadSize" : 22567352533,
@@ -308,6 +320,18 @@
       "requirements" : "min_host_26_virtual_installation",
       "url" : "https:\/\/updates.cdn-apple.com\/2026SummerSeed\/fullrestores\/122-99636\/BB03A927-E303-44C1-BB94-6197F130A163\/UniversalMac_27.0_26A5353q_Restore.ipsw",
       "version" : "27.0.0"
+    },
+    {
+      "build" : "25G5065a",
+      "channel" : "devbeta",
+      "downloadSize" : 19769079764,
+      "group" : "tahoe",
+      "id" : "25G5065a",
+      "mobileDeviceMinVersion" : "1827.100.14",
+      "name" : "macOS 26.6 Developer Beta 5",
+      "requirements" : "min_host_13",
+      "url" : "https:\/\/updates.cdn-apple.com\/2026SpringSeed\/fullrestores\/140-39234\/FAC2CC7B-4D0B-4522-A464-B0CD24A6E313\/UniversalMac_26.6_25G5065a_Restore.ipsw",
+      "version" : "26.6.0"
     },
     {
       "build" : "25G5057c",
