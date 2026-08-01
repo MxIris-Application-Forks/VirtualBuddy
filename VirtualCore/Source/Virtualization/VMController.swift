@@ -62,6 +62,7 @@ public struct VMSessionOptions: Hashable, Codable {
 public enum VMState: Equatable {
     case idle
     case starting(_ message: String?)
+    case resizingDisk(_ message: String?)
     case running(VZVirtualMachine)
     case paused(VZVirtualMachine)
     case savingState(VZVirtualMachine)
@@ -108,15 +109,18 @@ public final class VMController: ObservableObject {
 
     public private(set) var savedStatesController: VMSavedStatesController
 
-    private lazy var cancellables = Set<AnyCancellable>()
-    
+    private var cancellables = Set<AnyCancellable>()
+
+    private let guestAppDiskImage: GuestAdditionsDiskImage
+
     public init(with vm: VBVirtualMachine, library: VMLibraryController, options: VMSessionOptions? = nil) {
         self.id = vm.id
         self.name = vm.name
         self.virtualMachineModel = vm
         self.library = library
         self.savedStatesController = VMSavedStatesController(library: library, virtualMachine: vm)
-        
+        self.guestAppDiskImage = GuestAdditionsDiskImage(source: vm.configuration.guestAppDiskImageSource)
+
         #if DEBUG
         if ProcessInfo.isSwiftUIPreview { self.savedStatesController = .preview }
         #endif
@@ -133,7 +137,7 @@ public final class VMController: ObservableObject {
         /// Ensure configuration is persisted whenever it changes.
         $virtualMachineModel
             .dropFirst()
-            .throttle(for: 0.5, scheduler: DispatchQueue.main, latest: true)
+            .debounce(for: .milliseconds(50), scheduler: DispatchQueue.main)
             .sink { updatedModel in
                 do {
                     try updatedModel.saveMetadata()
@@ -171,6 +175,26 @@ public final class VMController: ObservableObject {
 
         await waitForGuestDiskImageReadyIfNeeded()
 
+        if virtualMachineModel.hasPendingDiskImageResizes {
+            state = .resizingDisk("Checking disk images...")
+            do {
+                var updatedModel = virtualMachineModel
+                let didResize = try await updatedModel.checkAndResizeDiskImages { message in
+                    self.state = .resizingDisk(message)
+                }
+                virtualMachineModel = updatedModel
+                if didResize {
+                    presentDiskResizeCompletedAlert()
+                }
+            } catch {
+                logger.warning("Failed to resize disk images: \(error, privacy: .public)")
+                presentDiskResizeError(error)
+                state = .stopped(error)
+                throw error
+            }
+        }
+        state = .starting("Starting virtual machine...")
+
         try await updatingState {
             let newInstance = try createInstance()
             self.instance = newInstance
@@ -197,8 +221,36 @@ public final class VMController: ObservableObject {
             let vm = try newInstance.virtualMachine
 
             state = .running(vm)
+
+            /// Update boot date VM metadata with the current date, only if not booting in recovery mode.
+            if !newInstance.isRecoveryBoot {
+                if virtualMachineModel.metadata.firstBootDate == nil {
+                    logger.debug("Setting first boot date")
+                    virtualMachineModel.metadata.firstBootDate = .now
+                }
+                virtualMachineModel.metadata.lastBootDate = .now
+            }
+
             virtualMachineModel.metadata.installFinished = true
         }
+    }
+
+    private func presentDiskResizeCompletedAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Disk Image Expanded"
+        alert.informativeText = "The disk image now has more space, but the guest operating system still needs to claim it. In a macOS guest, run 'diskutil apfs resizeContainer disk0s2 0' in Terminal after starting up. In other guests, use the system's partitioning tools."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func presentDiskResizeError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Disk Resize Failed"
+        alert.informativeText = "VirtualBuddy couldn't resize disk images before startup. The virtual machine was not started.\n\n\(error.localizedDescription)"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     /// Checks whether this virtual machine's network devices share a MAC address with any running virtual machine,
@@ -236,14 +288,19 @@ public final class VMController: ObservableObject {
            virtualMachineModel.configuration.systemType.supportsGuestApp
         else { return }
 
-        let guestDiskState = GuestAdditionsDiskImage.current.state
+        /// Kick off legacy guest app download if needed.
+        if virtualMachineModel.configuration.guestAppVersion != nil {
+            Task { try? await guestAppDiskImage.installIfNeeded() }
+        }
+
+        let guestDiskState = guestAppDiskImage.state
 
         logger.info("Guest disk image state is \(guestDiskState, privacy: .public)")
 
         switch guestDiskState {
         case .ready:
             break
-        case .installing:
+        case .downloading, .installing:
             await waitForGuestDiskImageReady()
         case .installFailed(let error):
             runGuestDiskImageErrorAlert(error: error)
@@ -253,7 +310,7 @@ public final class VMController: ObservableObject {
     private func waitForGuestDiskImageReady() async {
         state = .starting("Preparing guest app disk image")
 
-        for await state in GuestAdditionsDiskImage.current.$state.values {
+        for await state in guestAppDiskImage.$state.values {
             switch state {
             case .ready:
                 logger.debug("Guest disk image is ready 🚀")
@@ -261,6 +318,8 @@ public final class VMController: ObservableObject {
             case .installFailed(let error):
                 logger.error("Guest disk image install failed - \(error, privacy: .public)")
                 return runGuestDiskImageErrorAlert(error: error)
+            case .downloading:
+                logger.debug("Guest disk image is downloading...")
             case .installing:
                 logger.debug("Guest disk image is installing...")
             }
@@ -352,6 +411,29 @@ public final class VMController: ObservableObject {
         unhideCursor()
     }
 
+    /// Replaces the running virtual machine's network attachments and starts automatic retries for
+    /// any host interfaces that are not available yet.
+    public func reconnectNetwork() throws {
+        try ensureInstance().reconnectNetwork()
+    }
+
+    public var availableBridgeInterfaces: [VBNetworkDeviceInterface] {
+        VBNetworkDevice.bridgeInterfaces.sorted { lhs, rhs in
+            let nameOrder = lhs.name.localizedStandardCompare(rhs.name)
+            return nameOrder == .orderedSame ? lhs.id < rhs.id : nameOrder == .orderedAscending
+        }
+    }
+
+    public var activeBridgeInterfaceIdentifiers: Set<String> {
+        instance?.activeBridgeInterfaceIdentifiers ?? []
+    }
+
+    public func changeBridgeInterface(to interfaceIdentifier: String) throws {
+        let instance = try ensureInstance()
+        objectWillChange.send()
+        try instance.changeBridgeInterface(to: interfaceIdentifier)
+    }
+
     @available(macOS 14.0, *)
     public func saveState(snapshotName name: String) async throws {
         try await updatingState {
@@ -437,6 +519,7 @@ public extension VMState {
         switch lhs {
         case .idle: return rhs.isIdle
         case .starting: return rhs.isStarting
+        case .resizingDisk: return rhs.isResizingDisk
         case .running: return rhs.isRunning
         case .paused: return rhs.isPaused
         case .stopped: return rhs.isStopped
@@ -453,6 +536,10 @@ public extension VMState {
 
     var isStarting: Bool {
         guard case .starting = self else { return false }
+        return true
+    }
+    var isResizingDisk: Bool {
+        guard case .resizingDisk = self else { return false }
         return true
     }
 
@@ -523,6 +610,12 @@ public extension VMController {
 
     var canPause: Bool { state.canPause }
 
+    var canReconnectNetwork: Bool { state.isRunning || state.isPaused }
+
+    var canChangeBridgeInterface: Bool {
+        canReconnectNetwork && instance?.hasBridgedNetworkAttachments == true
+    }
+
 }
 
 public extension VMController {
@@ -545,5 +638,15 @@ public extension VBMacConfiguration {
         #else
         return UserDefaults.standard.bool(forKey: "VBShowDFUModeBootOption")
         #endif
+    }
+}
+
+extension VBMacConfiguration {
+    var guestAppDiskImageSource: GuestAdditionsDiskImage.Source {
+        if let guestAppVersion {
+            GuestAdditionsDiskImage.Source.catalog(guestAppVersion)
+        } else {
+            GuestAdditionsDiskImage.Source.embedded
+        }
     }
 }
