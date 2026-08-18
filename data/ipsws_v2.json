@@ -300,6 +300,18 @@
   ],
   "restoreImages" : [
     {
+      "build" : "26A5416b",
+      "channel" : "devbeta",
+      "downloadSize" : 22740968239,
+      "group" : "goldengate",
+      "id" : "26A5416b",
+      "mobileDeviceMinVersion" : "1853.0.0",
+      "name" : "macOS 27.0 Developer Beta 6",
+      "requirements" : "min_host_26_virtual_installation",
+      "url" : "https:\/\/updates.cdn-apple.com\/2026SummerSeed\/7b1c2bd9-7617-426d-92e5-ef204407ffaa\/UniversalMac_27.0_26A5416b_Restore.ipsw",
+      "version" : "27.0.0"
+    },
+    {
       "build" : "26A5406e",
       "channel" : "devbeta",
       "downloadSize" : 22743302878,
@@ -372,13 +384,25 @@
       "version" : "27.0.0"
     },
     {
-      "build" : "25G82",
+      "build" : "25G83",
       "channel" : "regular",
+      "downloadSize" : 19772231540,
+      "group" : "tahoe",
+      "id" : "25G83",
+      "mobileDeviceMinVersion" : "1827.100.14",
+      "name" : "macOS 26.6.2",
+      "requirements" : "min_host_13",
+      "url" : "https:\/\/updates.cdn-apple.com\/2026SummerFCS\/fullrestores\/140-75212\/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D\/UniversalMac_26.6.2_25G83_Restore.ipsw",
+      "version" : "26.6.2"
+    },
+    {
+      "build" : "25G82",
+      "channel" : "devbeta",
       "downloadSize" : 19772367538,
       "group" : "tahoe",
       "id" : "25G82",
       "mobileDeviceMinVersion" : "1827.100.14",
-      "name" : "macOS 26.6.2",
+      "name" : "macOS 26.6.2 RC",
       "requirements" : "min_host_13",
       "url" : "https:\/\/updates.cdn-apple.com\/2026SummerFCS\/fullrestores\/140-83731\/E1F24412-C22B-42A2-AE01-09E5E18573E1\/UniversalMac_26.6.2_25G82_Restore.ipsw",
       "version" : "26.6.2"
