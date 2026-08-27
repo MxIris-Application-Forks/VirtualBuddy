@@ -33,6 +33,7 @@ enum CatalogFeatureID {
     static let displayResize = "display_resize"
     static let rosettaSharing = "rosetta_sharing"
     static let provisioning = "provisioning"
+    static let usbPassthrough = "usb_passthrough"
 }
 
 extension ResolvedRestoreImage {
@@ -81,6 +82,9 @@ struct VMConfigurationView: View {
     @AppStorage("config.storage.collapsed")
     private var storageCollapsed = true
 
+    @AppStorage("config.usbDevices.collapsed")
+    private var usbDevicesCollapsed = true
+
     @AppStorage("config.display.collapsed")
     private var displayCollapsed = true
     
@@ -120,42 +124,47 @@ struct VMConfigurationView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if showTemplatePicker {
-                templatePicker
+            Group {
+                if showTemplatePicker {
+                    templatePicker
+                }
+    
+                if showBootDiskSection {
+                    bootDisk
+                }
+    
+                general
+    
+                if showProvisioningSection {
+                    provisioning
+                }
+    
+                storage
+
+                usbDevices
+
+                display
+
+                if showPointingDeviceSection {
+                    pointingDevice
+                }
+
+                if showKeyboardDeviceSection {
+                    keyboardDevice
+                }
+
+                network
+
+                sound
+
+                if showGuestAppSection {
+                    guestApp
+                }
+
+                sharing
             }
-
-            if showBootDiskSection {
-                bootDisk
-            }
-
-            general
-
-            if showProvisioningSection {
-                provisioning
-            }
-
-            storage
-
-            display
-
-            if showPointingDeviceSection {
-                pointingDevice
-            }
-
-            if showKeyboardDeviceSection {
-                keyboardDevice
-            }
-
-            network
-
-            sound
-
-            if showGuestAppSection {
-                guestApp
-            }
-
-            sharing
-                .frame(minWidth: 0, idealWidth: VMConfigurationSheet.minWidth)
+            /// This is required so that contents that have long text content won't cause the width to expand automatically.
+            .frame(minWidth: 0, idealWidth: VMConfigurationSheet.minWidth)
         }
         .font(.system(size: 12))
         .environment(\.configurationGuestType, viewModel.config.systemType)
@@ -252,6 +261,19 @@ struct VMConfigurationView: View {
                 viewModel.config.hardware.cpuCount = initialConfiguration.hardware.cpuCount
                 viewModel.config.hardware.memorySize = initialConfiguration.hardware.memorySize
             }
+        }
+    }
+
+    @ViewBuilder
+    private var usbDevices: some View {
+        ConfigurationSection($usbDevicesCollapsed) {
+            USBDevicesConfigurationView(hardware: $viewModel.config.hardware)
+        } header: {
+            SummaryHeader(
+                "USB Devices",
+                systemImage: "cable.connector",
+                summary: viewModel.config.usbDevicesSummary
+            )
         }
     }
 
