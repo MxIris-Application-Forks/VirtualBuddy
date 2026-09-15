@@ -284,8 +284,9 @@ public final class VMController: ObservableObject {
     ///
     /// It will also alert the user in case guest disk image generation has failed so that they know there's something wrong/
     private func waitForGuestDiskImageReadyIfNeeded() async {
-        guard virtualMachineModel.configuration.guestAdditionsEnabled,
-           virtualMachineModel.configuration.systemType.supportsGuestApp
+        guard !VirtualBuddyManagedPreferences.guestAppDisabled,
+           virtualMachineModel.configuration.guestAdditionsEnabled,
+           virtualMachineModel.guestAppSupport != .unsupported
         else { return }
 
         /// Kick off legacy guest app download if needed.
