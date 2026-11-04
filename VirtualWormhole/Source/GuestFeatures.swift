@@ -82,6 +82,13 @@ struct GuestFeatureProviders {
     var exportDefaults: (String, URL) async throws -> Void
     var importDefaults: (String, URL) async throws -> Void
 
+    var systemInformation: () async throws -> GuestSystemInformation = { try await SystemInformationCollector.collect() }
+    var systemInformationChanges: (@escaping @MainActor () -> Void) -> () -> Void = SystemInformationCollector.observeChanges
+
+    var appearance: () -> Bool? = SystemGuestAppearance.isDarkModeEnabled
+    var setAppearance: (Bool) throws -> Void = SystemGuestAppearance.setDarkModeEnabled
+    var appearanceChanges: (@escaping @MainActor () -> Void) -> () -> Void = SystemGuestAppearance.observeChanges
+
     static var live: Self {
         Self(clipboard: SystemGuestClipboard.shared, notifications: { names, receive in
             var darwin: [SystemNotification] = []
