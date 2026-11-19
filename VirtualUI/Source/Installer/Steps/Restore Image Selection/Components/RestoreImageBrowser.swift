@@ -48,6 +48,7 @@ struct RestoreImageBrowser: View {
                 scrollView
             }
         }
+        .modifier(CatalogScrollViewport())
         .safeAreaInset(edge: .top, spacing: 0) { Color.clear.frame(height: containerPadding) }
         .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: containerPadding) }
         .focusable()
@@ -91,6 +92,17 @@ struct RestoreImageBrowser: View {
     @Environment(\.redactionReasons)
     private var redaction
 
+    private var sharedWarning: (title: String, instructions: String?)? {
+        let images = controller.images
+        guard let first = images.first, case .unsupported(let title?, let message) = first.status,
+              images.dropFirst().allSatisfy({ image in
+                  guard case .unsupported(let otherTitle, _) = image.status else { return false }
+                  return otherTitle == title
+              }) else { return nil }
+        let sameInstructions = images.dropFirst().allSatisfy { $0.status == first.status }
+        return (title, sameInstructions ? message : nil)
+    }
+
     @ViewBuilder
     private var scrollView: some View {
         ScrollView(.vertical, showsIndicators: false) {
@@ -106,8 +118,32 @@ struct RestoreImageBrowser: View {
     private var stack: some View {
         LazyVStack(alignment: .leading, spacing: 8, pinnedViews: .sectionHeaders) {
             if redaction.isEmpty {
+                let warning = sharedWarning
+                if let warning {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(warning.title, systemImage: "exclamationmark.octagon.fill")
+                            .font(.headline)
+                            .foregroundStyle(.primary, .red)
+                            .accessibilityAddTraits(.isHeader)
+                        if let instructions = warning.instructions, !instructions.isEmpty {
+                            SupportInstructions(message: instructions)
+                        } else if warning.instructions == nil,
+                                  let image = controller.selectedRestoreImage ?? controller.images.first,
+                                  case .unsupported(_, let message) = image.status, !message.isEmpty {
+                            Text(image.name).font(.subheadline.bold())
+                            SupportInstructions(message: message)
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .airMaterialBackground(
+                        visualEffect: .material(.thick),
+                        glassEffect: .regular,
+                        in: RoundedRectangle(cornerRadius: 12)
+                    )
+                }
                 ForEach(controller.channelGroups) { group in
-                    section(for: group)
+                    section(for: group, showsUnsupportedTitle: warning == nil)
                 }
             } else if controller.isLoading {
                 /// Placeholders are only displayed when controller is loading to avoid jumps when loading happens quickly (or not at all).
@@ -121,10 +157,10 @@ struct RestoreImageBrowser: View {
     }
 
     @ViewBuilder
-    private func section(for group: ChannelGroup) -> some View {
+    private func section(for group: ChannelGroup, showsUnsupportedTitle: Bool) -> some View {
         Section {
             ForEach(group.images) { image in
-                RestoreImageButton(image: image, isSelected: image.id == selection?.id) {
+                RestoreImageButton(image: image, isSelected: image.id == selection?.id, showsUnsupportedTitle: showsUnsupportedTitle) {
                     selection = image
                 } deleteDownload: {
                     controller.deleteLocalDownload(for: image)
@@ -138,6 +174,7 @@ struct RestoreImageBrowser: View {
 private struct RestoreImageButton: View {
     var image: ResolvedRestoreImage
     var isSelected: Bool
+    var showsUnsupportedTitle = true
     var action: () -> ()
     var deleteDownload: () -> ()
 
@@ -165,7 +202,7 @@ private struct RestoreImageButton: View {
                 supportState
             }
 
-            if case .unsupported(let title, _) = image.status, let title {
+            if showsUnsupportedTitle, case .unsupported(let title?, _) = image.status {
                 Button {
                     showingSupportDetail.toggle()
                 } label: {
@@ -318,20 +355,13 @@ struct RestoreImageFeatureDetailView: View {
                     if let title {
                         Text(title)
                     } else {
-                        Text("This Version May Not Work")
+                        Text(image.status.topLevelTitle)
                     }
                 }
                     .imageScale(.large)
                     .font(.headline)
 
-                Group {
-                    if let attributedMessage = try? AttributedString(markdown: message, options: .init(allowsExtendedAttributes: true, interpretedSyntax: .inlineOnlyPreservingWhitespace, failurePolicy: .returnPartiallyParsedIfPossible, languageCode: nil)) {
-                        Text(attributedMessage)
-                    } else {
-                        Text(message)
-                    }
-                }
-                .fixedSize(horizontal: false, vertical: true)
+                SupportInstructions(message: message)
 
                 if image.requirements.requiredAppUpdate != nil {
                     VStack(alignment: .leading, spacing: 8) {
@@ -354,6 +384,19 @@ struct RestoreImageFeatureDetailView: View {
             .controlGroup()
             .textSelection(.enabled)
         }
+    }
+}
+
+private struct SupportInstructions: View {
+    let message: String
+
+    var body: some View {
+        let options = AttributedString.MarkdownParsingOptions(
+            allowsExtendedAttributes: true, interpretedSyntax: .inlineOnlyPreservingWhitespace,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+        Text((try? AttributedString(markdown: message, options: options)) ?? AttributedString(message))
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -392,7 +435,7 @@ extension ResolvedFeatureStatus {
         switch self {
         case .supported: "This Version Should Work"
         case .warning: "This Version May Not Work"
-        case .unsupported: "This Version Will Not Work"
+        case .unsupported: "This version can’t be installed on this Mac."
         }
     }
 
@@ -400,7 +443,7 @@ extension ResolvedFeatureStatus {
         switch self {
         case .supported: "checkmark"
         case .warning: "exclamationmark.triangle"
-        case .unsupported: "xmark"
+        case .unsupported: "exclamationmark.octagon"
         }
     }
 
