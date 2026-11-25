@@ -6,6 +6,7 @@
 //
 
 import Cocoa
+import MacDebugHost
 @_exported import VirtualCore
 @_exported import VirtualUI
 import VirtualWormhole
@@ -36,7 +37,12 @@ import Combine
     private lazy var debugBroker = DebugBroker(library: library)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        debugBroker.start()
+        settingsContainer.developerFeaturesAvailability
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] available in
+                MainActor.assumeIsolated { self?.setAcceptsDebugRuns(available) }
+            }
+            .store(in: &cancellables)
         XcodeDebugSetup.observeCachePreparation()
         GuestAdditionsDiskImage.default.$state.sink { state in
             switch state {
@@ -61,6 +67,17 @@ import Combine
         #if DEBUG
         runLaunchDebugTasks()
         #endif
+    }
+
+    /// The debugger socket exists only while developer features are enabled and allowed.
+    private func setAcceptsDebugRuns(_ accepts: Bool) {
+        guard accepts else { return debugBroker.stopListening() }
+
+        do {
+            try debugBroker.start()
+        } catch {
+            logger.error("Could not start Xcode debugging: \(error.localizedDescription)")
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) { debugBroker.stop() }

@@ -1,5 +1,5 @@
 import Foundation
-import VirtualWormhole
+import MacDebugProtocol
 
 /// A project may rely entirely on Xcode's automatically generated app schemes.
 public struct DebugScheme {
@@ -95,7 +95,7 @@ public struct DebugScheme {
     }
 
     public struct Binding {
-        public let vm: UUID
+        public let destination: UUID
         public let scheme: UUID
         let target: String
     }
@@ -106,53 +106,93 @@ public struct DebugScheme {
         let actions = (try? document.nodes(forXPath: "/Scheme/LaunchAction/PreActions/ExecutionAction/ActionContent/@scriptText")) ?? []
         for action in actions {
             let header = action.stringValue?.components(separatedBy: "\n").first?.components(separatedBy: " ") ?? []
-            if header.count == 5, header[0] == "#", header[1] == "VirtualBuddy", let vm = UUID(uuidString: header[2]), let scheme = UUID(uuidString: header[3]) {
-                return Binding(vm: vm, scheme: scheme, target: header[4])
+            if header.count == 5, header[0] == "#", header[1] == "MacDebug", let destination = UUID(uuidString: header[2]), let scheme = UUID(uuidString: header[3]) {
+                return Binding(destination: destination, scheme: scheme, target: header[4])
             }
         }
-        guard let root = document.rootElement(), let vm = root.attribute(forName: "VirtualBuddyVM")?.stringValue.flatMap(UUID.init(uuidString:)),
-              let id = root.attribute(forName: "VirtualBuddyBinding")?.stringValue.flatMap(UUID.init(uuidString:)),
-              let target = root.attribute(forName: "VirtualBuddyTarget")?.stringValue else { return nil }
-        return Binding(vm: vm, scheme: id, target: target)
+        guard let root = document.rootElement(),
+              let destination = root.attribute(forName: "MacDebugDestination")?.stringValue.flatMap(UUID.init(uuidString:)),
+              let scheme = root.attribute(forName: "MacDebugBinding")?.stringValue.flatMap(UUID.init(uuidString:)),
+              let target = root.attribute(forName: "MacDebugTarget")?.stringValue else { return nil }
+        return Binding(destination: destination, scheme: scheme, target: target)
+    }
+
+    /// Finds the scheme of a running pre-action from the build settings Xcode gives it.
+    /// Xcode keeps the binding when the developer renames or duplicates a scheme, so prefer the
+    /// file named after the scheme that is running: its Run arguments are the ones to use.
+    static func installed(binding id: UUID, settings: [String: String]) throws -> (document: XMLDocument, binding: Binding) {
+        var containers = [URL]()
+        if let workspace = settings["WORKSPACE_PATH"].map({ URL(fileURLWithPath: $0) }) {
+            // A project opened on its own reports the workspace embedded in it.
+            containers.append(workspace.lastPathComponent == "project.xcworkspace" ? workspace.deletingLastPathComponent() : workspace)
+        }
+        if let project = settings["PROJECT_FILE_PATH"] { containers.append(URL(fileURLWithPath: project)) }
+        var found: (document: XMLDocument, binding: Binding)?
+        for container in containers {
+            for dir in ["xcuserdata/\(NSUserName()).xcuserdatad/xcschemes", "xcshareddata/xcschemes"] {
+                for file in (try? FileManager.default.contentsOfDirectory(at: container.appendingPathComponent(dir), includingPropertiesForKeys: nil)) ?? [] where file.pathExtension == "xcscheme" {
+                    guard let xml = try? XMLDocument(contentsOf: file, options: [.nodeLoadExternalEntitiesNever]),
+                          let binding = binding(in: xml), binding.scheme == id else { continue }
+                    if file.deletingPathExtension().lastPathComponent == settings["SCHEME_NAME"] { return (xml, binding) }
+                    if found == nil { found = (xml, binding) }
+                }
+            }
+        }
+        guard let found else { throw MacDebugError("Could not find the scheme for this Run action. Set up Xcode debugging for it again.") }
+        return found
     }
 
     static func shellQuote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
-    public func install(vm: UUID, named vmName: String, app: URL) throws -> URL {
+    /// Call when the developer asks for the scheme. The binding is recorded as their approval
+    /// for Run actions from this scheme to start the destination and launch the app on it.
+    public func install(destination: UUID, named destinationName: String, configuration: DebugHostConfiguration,
+                        bindings: any DebugBindingStore) throws -> URL {
         let fm = FileManager.default
         let directory = container.appendingPathComponent("xcuserdata/\(NSUserName()).xcuserdatad/xcschemes")
-        let filename = (name + " — " + vmName).replacingOccurrences(of: "/", with: "-") + ".xcscheme"
+        let filename = (name + " — " + destinationName).replacingOccurrences(of: "/", with: "-") + ".xcscheme"
         let output = directory.appendingPathComponent(filename)
         let id: UUID
         let targetID = reference.attribute(forName: "BlueprintIdentifier")?.stringValue ?? ""
         if fm.fileExists(atPath: output.path) {
             let existing = try XMLDocument(contentsOf: output, options: [.nodeLoadExternalEntitiesNever])
-            guard let binding = Self.binding(in: existing), binding.vm == vm, binding.target == targetID else {
-                throw VBDebugError("Another scheme already uses the name \(filename). Rename it or choose another scheme.")
+            guard let binding = Self.binding(in: existing), binding.destination == destination, binding.target == targetID else {
+                throw MacDebugError("Another scheme already uses the name \(filename). Rename it or choose another scheme.")
             }
             id = binding.scheme
         } else { id = UUID() }
-        guard let xml = document.copy() as? XMLDocument, let root = xml.rootElement(), let launch = root.elements(forName: "LaunchAction").first else { throw VBDebugError("Missing scheme Run action.") }
+        guard let xml = document.copy() as? XMLDocument, let root = xml.rootElement(), let launch = root.elements(forName: "LaunchAction").first else { throw MacDebugError("Missing scheme Run action.") }
         func set(_ node: XMLElement, _ key: String, _ value: String) {
             node.removeAttribute(forName: key)
             node.addAttribute(XMLNode.attribute(withName: key, stringValue: value) as! XMLNode)
         }
-        set(root, "VirtualBuddyVM", vm.uuidString)
-        set(root, "VirtualBuddyBinding", id.uuidString)
-        set(root, "VirtualBuddyTarget", targetID)
+        set(root, "MacDebugDestination", destination.uuidString)
+        set(root, "MacDebugBinding", id.uuidString)
+        set(root, "MacDebugTarget", targetID)
         for child in launch.children ?? [] where ["BuildableProductRunnable", "PathRunnable", "RemoteRunnable", "MacroExpansion"].contains(child.name) { child.detach() }
-        let path = Self.element("PathRunnable", ["runnableDebuggingMode": "0", "FilePath": "/usr/bin/false"])
-        launch.addChild(path)
-        let macro = Self.element("MacroExpansion")
-        macro.addChild(reference.copy() as! XMLNode)
-        launch.addChild(macro)
+        // Xcode uses the scheme's runnable to label the process in its navigator.
+        // The custom launch commands below connect LLDB to the remote executable.
+        let runnable = Self.element("BuildableProductRunnable", ["runnableDebuggingMode": "0"])
+        runnable.addChild(reference.copy() as! XMLNode)
+        launch.addChild(runnable)
         let pre = launch.elements(forName: "PreActions").first ?? Self.element("PreActions")
         if pre.parent == nil { launch.insertChild(pre, at: 0) }
         let action = Self.element("ExecutionAction", ["ActionType": "Xcode.IDEStandardExecutionActionsCore.ExecutionActionType.ShellScriptAction"])
-        let cli = app.appendingPathComponent("Contents/MacOS/vbdebug")
-        guard targetID.range(of: "^[a-zA-Z0-9_.-]+$", options: .regularExpression) != nil else { throw VBDebugError("The selected app has an invalid Xcode target identifier.") }
-        let script = "# VirtualBuddy \(vm.uuidString) \(id.uuidString) \(targetID)\nexec " + Self.shellQuote(cli.path) + " prepare " + Self.shellQuote(output.path) + "\n"
-        let content = Self.element("ActionContent", ["title": "Prepare app on " + vmName, "scriptText": script])
+        guard targetID.range(of: "^[a-zA-Z0-9_.-]+$", options: .regularExpression) != nil else { throw MacDebugError("The selected app has an invalid Xcode target identifier.") }
+        // The script names neither the app bundle nor this file, so the scheme keeps working after
+        // the app is updated or moved, and after the developer renames the scheme or moves the project.
+        // Run the helper by its real path: it finds the app from its own location.
+        try configuration.refreshLinks()
+        let script = """
+            # MacDebug \(destination.uuidString) \(id.uuidString) \(targetID)
+            helper=$(/usr/bin/readlink \(Self.shellQuote(configuration.helperLink.path))) || {
+                echo "The app that created this scheme is not set up for Xcode debugging. Open it, then run again." >&2
+                exit 1
+            }
+            exec "$helper" prepare \(id.uuidString)
+
+            """
+        let content = Self.element("ActionContent", ["title": "Prepare app on " + destinationName, "scriptText": script])
         let environment = Self.element("EnvironmentBuildable")
         environment.addChild(reference.copy() as! XMLNode)
         content.addChild(environment)
@@ -173,10 +213,12 @@ public struct DebugScheme {
         set(launch, "selectedDebuggerIdentifier", "Xcode.DebuggerFoundation.Debugger.LLDB")
         set(launch, "selectedLauncherIdentifier", "Xcode.DebuggerFoundation.Launcher.LLDB")
         set(launch, "customLaunchCommandPauseAfterCommands", "NO")
-        let module = app.appendingPathComponent("Contents/Resources/virtualbuddy_debug.py").path
-        guard !module.contains("`"), !module.contains("\n") else { throw VBDebugError("Move VirtualBuddy to an Applications folder before setting up Xcode.") }
+        let module = configuration.moduleLink.path
+        guard !module.contains("`"), !module.contains("\n") else { throw MacDebugError("The LLDB module path contains an unsupported character.") }
         let escaped = module.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        set(launch, "customLaunchCommand", "command script import \"\(escaped)\"\nvb-connect \(id.uuidString)")
+        let runtime = Data(configuration.runtimeDirectory.path.utf8).base64EncodedString()
+        set(launch, "customLaunchCommand", "command script import \"\(escaped)\"\nmac-debug-connect \(id.uuidString) \(runtime)")
+        try bindings.register(DebugBinding(id: id, destination: destination, target: targetID, scheme: output))
         try DebugTools.directory(directory)
         // Foundation emits literal newlines in attributes. XML readers normalize
         // those to spaces, collapsing both custom LLDB commands into one.

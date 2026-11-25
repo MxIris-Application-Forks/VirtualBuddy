@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import VirtualWormhole
+@testable import MacDebugProtocol
 
 struct DebugTransportTests {
     @Test func framingAndDuplexRelayPreserveArbitraryBytes() async throws {
@@ -33,6 +33,22 @@ struct DebugTransportTests {
         task.cancel()
         await #expect(throws: (any Error).self) { try await task.value }
         #expect(start.duration(to: .now) < .seconds(2))
+    }
+
+    @Test func aLocalPeerIsIdentifiedByItsCodeSignature() async throws {
+        let file = URL(fileURLWithPath: "/private/tmp/" + UUID().uuidString + ".sock")
+        let listener = try DebugSocket.unix(file, listening: true)
+        defer { unlink(file.path) }
+        async let accepted = listener.accept(timeout: 5000) { _, _ in }
+        let client = try DebugSocket.unix(file, listening: false)
+        let server = try await accepted
+        // Both ends are this test process, which satisfies only its own requirement.
+        let own = try DebugPeerRequirement.currentApplication()
+        #expect(throws: Never.self) { try server.requirePeer(own) }
+        #expect(throws: Never.self) { try client.requirePeer(own) }
+        let other = try DebugPeerRequirement(#"identifier "com.example.another-app" and anchor apple generic"#)
+        #expect(throws: (any Error).self) { try server.requirePeer(other) }
+        #expect(throws: (any Error).self) { try DebugPeerRequirement("not a requirement") }
     }
 
     @Test func guestControlledCacheNamesAreConfined() {
