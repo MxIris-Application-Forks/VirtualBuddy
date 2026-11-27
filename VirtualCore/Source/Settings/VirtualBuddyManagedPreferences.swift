@@ -22,6 +22,7 @@ public enum VirtualBuddyManagedPreferences: ManagedPreferencesNamespace {
             Preference<[String]>.serviceTunnelDeniedHostPorts
             Preference<[String]>.serviceTunnelAllowedHostSocketPaths
             Preference<[String]>.serviceTunnelDeniedHostSocketPaths
+            Preference<String>.serviceTunnelMinimumReviewLevel
         }
         Group("Audio") {
             Preference<Bool>.disableMicrophoneInput
@@ -32,6 +33,9 @@ public enum VirtualBuddyManagedPreferences: ManagedPreferencesNamespace {
         }
         Group("Developer") {
             Preference<Bool>.disableDeveloperFeatures
+        }
+        Group("Automation") {
+            Preference<Bool>.disableCommandLineAccess
         }
     }
 
@@ -57,6 +61,19 @@ public extension ManagedPreference where Namespace == VirtualBuddyManagedPrefere
             Option(true, "Disable developer features.")
             Option(false, "Allow users to choose whether to enable developer features.")
         }
+    }
+
+    static let disableCommandLineAccess = Self("DisableCommandLineAccess", title: "Disable Command-Line Access", default: false) {
+        Summary("Prevents the vbctl command-line tool from controlling VirtualBuddy.")
+        Discussion("Command-line access lets vbctl, which is part of the VirtualBuddy app, start and stop virtual machines, change the settings of running virtual machines and use guest features. Users turn it on in VirtualBuddy's Security settings.")
+        DefaultBehavior("When absent or false, VirtualBuddy uses the user's Command Line setting, which is off until the user turns it on. Invalid values fall back to false.")
+        Behavior("Locks the Command Line switch off and closes the socket vbctl connects to. Commands that are already running are refused when they next ask for something.")
+        Behavior("Deep links are unaffected. Removing the restriction restores the user's saved setting.")
+        Options {
+            Option(true, "Disable command-line access.")
+            Option(false, "Allow users to choose whether to enable command-line access.")
+        }
+        Example(true, "Keep vbctl from controlling VirtualBuddy on managed Macs.")
     }
 
     static let disableProvisioningRemoteLogin = Self("DisableProvisioningRemoteLogin", title: "Disable Provisioning Remote Login", default: false) {
@@ -251,5 +268,22 @@ public extension ManagedPreference where Namespace == VirtualBuddyManagedPrefere
         Behavior("Tunnels using a listed host socket path, or a path inside a listed folder, don't start and can't be requested by virtual machines.")
         Note("A value that isn't a list, and entries that aren't absolute paths, deny every host socket path.")
         Example(["/var/run/docker.sock", "~/.ssh/"], "Keep tunnels away from the Docker socket and from anything in the user's .ssh folder.")
+    }
+}
+
+public extension ManagedPreference where Namespace == VirtualBuddyManagedPreferences, Value == String {
+    static let serviceTunnelMinimumReviewLevel = Self("ServiceTunnelMinimumReviewLevel", as: String.self, title: "Minimum Review for Service Tunnels") {
+        Summary("Sets the least review of service tunnels that users can choose in VirtualBuddy's Security settings.")
+        Discussion("Users choose how much of a virtual machine's service tunnels they review on this Mac before the tunnels run. This preference keeps them from choosing less review than the organization accepts. It never lowers what a user chose.")
+        DefaultBehavior("Users can choose any level when this preference is absent. VirtualBuddy reviews every change until a user chooses otherwise.")
+        Behavior("Levels with less review than the one set here can't be selected, and a lower level that was already saved stops applying. Tunnels that ran without the review now required stop until they're reviewed, including in running virtual machines.")
+        Behavior("The other service tunnel preferences apply at every level.")
+        Note("A value that isn't one of the options requires every change to be reviewed.")
+        Options {
+            Option("EveryChange", "Every tunnel a virtual machine requests, and every tunnel that wasn't approved on this Mac for that virtual machine, is reviewed.")
+            Option("NewTunnels", "A tunnel is reviewed the first time its host port or socket is used. After that it's allowed for any virtual machine without review.")
+            Option("Never", "Tunnels run without review. This is the same as not setting the preference.")
+        }
+        Example("EveryChange", "Require every service tunnel to be reviewed on managed Macs.")
     }
 }

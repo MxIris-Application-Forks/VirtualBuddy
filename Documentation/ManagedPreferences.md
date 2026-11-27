@@ -37,6 +37,17 @@ To prevent users from enabling developer features, deploy this Boolean in the `c
 
 The profile locks **Settings → Developer → Enable Developer Features** off, including on Macs with Xcode installed. VirtualBuddy hides **Set Up Xcode Debugging…** and rejects new debug runs from existing schemes. Attached debugging sessions can finish, and users can still delete cached symbols in the Developer tab. Removing the restriction restores the user's saved choice.
 
+## Disable command-line access
+
+To prevent the [`vbctl` command-line tool](CommandLine.md) from controlling VirtualBuddy, deploy this Boolean in the `codes.rambo.VirtualBuddy` preference domain:
+
+```xml
+<key>DisableCommandLineAccess</key>
+<true/>
+```
+
+The profile locks **Settings → Security → Allow vbctl to control VirtualBuddy** off and closes the socket the tool connects to, including while the app is running. Commands that are waiting for something end, and new ones are refused. Deep links are unaffected. Removing the restriction restores the user's saved choice, which is off until the user turns it on.
+
 ## Restrict service tunnels
 
 [Service tunnels](ServiceTunnels.md) forward loopback TCP ports and Unix sockets between the host and a macOS guest. A profile can turn the feature off, turn off parts of it, or limit the host ports and socket paths it can use. All of these preferences go in the `codes.rambo.VirtualBuddy` preference domain and can be combined.
@@ -91,9 +102,26 @@ When a restriction applies:
 
 The lists fail closed. A value that isn't an array, or an entry that isn't a port, a range or an absolute path, allows nothing in an allowed list and denies everything in a denied list. Integers are accepted for ports. The Booleans behave like the other restrictions: missing and incorrectly typed values mean unrestricted.
 
+### Require service tunnels to be reviewed
+
+Users can choose how much of a virtual machine's service tunnels they review before the tunnels run, in **Settings → Security → Tunnel review**. `ServiceTunnelMinimumReviewLevel` is a string that sets the least review they can choose:
+
+| Value | Review |
+| --- | --- |
+| `EveryChange` | Every tunnel a virtual machine requests, and every saved tunnel that wasn't approved for that virtual machine on the host. This is what VirtualBuddy does until a user chooses otherwise. |
+| `NewTunnels` | A tunnel is reviewed the first time its host port or socket is used. After that it's allowed for any virtual machine without review. |
+| `Never` | No review. Same as leaving the preference out. |
+
+```xml
+<key>ServiceTunnelMinimumReviewLevel</key>
+<string>EveryChange</string>
+```
+
+Levels with less review can't be selected, and a lower level a user saved earlier stops applying without being changed. Tunnels that were running without the required review stop until a user reviews them, including in running virtual machines. The preference only ever adds review: any value that isn't one of the three strings requires every change to be reviewed.
+
 ## Verification
 
-Apart from the service tunnel lists described above, all managed preferences are Booleans, with a default of `false`. Missing or incorrectly typed values fall back to that default. Saved settings are preserved while a policy overrides their effective behavior.
+Apart from the service tunnel lists and review level described above, all managed preferences are Booleans, with a default of `false`. Missing or incorrectly typed values fall back to that default. Saved settings are preserved while a policy overrides their effective behavior.
 
 | Preference | Restriction |
 | --- | --- |
@@ -105,7 +133,9 @@ Apart from the service tunnel lists described above, all managed preferences are
 | `DisableProvisioningRemoteLogin` | Prevents VirtualBuddy from enabling remote login (SSH) during macOS guest provisioning. |
 | `DisableProvisioningAutomaticLogin` | Prevents VirtualBuddy from enabling automatic login during macOS guest provisioning. |
 | `DisableDeveloperFeatures` | Locks developer features off and blocks Xcode debugging setup and new debug runs. |
+| `DisableCommandLineAccess` | Locks command-line access off, so that `vbctl` can't control the app. |
 | `DisableServiceTunnels` and the other service tunnel preferences | Stops service tunnels, or the part of the feature each one names, as described under [Restrict service tunnels](#restrict-service-tunnels). |
+| `ServiceTunnelMinimumReviewLevel` | Sets the least review of service tunnels users can choose, as described under [Require service tunnels to be reviewed](#require-service-tunnels-to-be-reviewed). |
 
 The provisioning restrictions apply when VirtualBuddy creates a macOS guest account. They do not modify existing guest settings or prevent someone from changing those settings inside the guest. Saved provisioning selections are preserved and become available again if the restriction is removed before provisioning.
 

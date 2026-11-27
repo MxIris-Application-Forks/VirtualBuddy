@@ -41,6 +41,9 @@ final class TunnelGuestService: GuestService {
     var approvedRules: () -> [ServiceTunnel] = { [] }
     /// What the organization managing the host allows. It's applied on top of what the user approved, and only on the host.
     var policy: () -> ServiceTunnelPolicy = { .unrestricted }
+    /// Lets the host add a tunnel its guest requested without a review, when the user chose to review less.
+    /// A tunnel it accepts has to be among the approved rules from then on. The policy has had its say before this is asked.
+    var acceptProposal: (ServiceTunnel) -> Bool = { _ in false }
     private var listeners: [UUID: TunnelListener] = [:]
     /// Listeners that were stopped but whose addresses aren't free yet.
     private var closingListeners = 0
@@ -85,6 +88,8 @@ final class TunnelGuestService: GuestService {
             let policy = policy()
             state.requests.removeAll { policy.requestsDisabled || !policy.permits($0) }
             reconcile(permittedRules())
+            // What's still waiting may not need a review anymore, now that the host's settings changed.
+            if !state.requests.filter(accept).isEmpty { reconcile(permittedRules()) }
             publish()
         }
     }
@@ -96,10 +101,41 @@ final class TunnelGuestService: GuestService {
         return approvedRules().filter(policy.permits)
     }
 
+    /// Whether a request that passed the policy became an approved rule on its own.
+    private func accept(_ request: ServiceTunnel) -> Bool {
+        request.canAdd(to: state.rules) && acceptProposal(request)
+    }
+
     func decline(_ id: UUID) {
         guard state.available, state.requests.contains(where: { $0.id == id }) else { return }
         state.requests.removeAll { $0.id == id }
         publish()
+    }
+
+    /// Asks for a tunnel from the host's side on behalf of something that isn't allowed to approve it, such as the command-line tool.
+    /// It gets the same treatment as a tunnel the guest asked for: it starts right away when the host's review level allows that,
+    /// and waits with the other requests for the user to review it in the app otherwise.
+    ///
+    /// - Returns: Whether the tunnel became an approved rule without waiting for review.
+    func proposeFromHost(_ rule: ServiceTunnel) throws -> Bool {
+        guard isHost, state.available else { throw GuestSessionError.disconnected }
+        let policy = policy()
+        if let restriction = policy.restriction(on: rule) { throw TunnelError(restriction.explanation) }
+        guard rule.isEnabled, rule.canAdd(to: state.rules), rule.canAdd(to: state.requests) else {
+            throw TunnelError("That listener is already mapped or the mapping is invalid.")
+        }
+        if acceptProposal(rule) {
+            reconcile(permittedRules())
+            publish()
+            return true
+        }
+        // Requests the organization turned off are removed whenever the tunnels are reloaded, so one can't be left waiting.
+        guard !policy.requestsDisabled else {
+            throw TunnelError("This tunnel has to be reviewed, and your organization doesn't allow tunnel requests. Add it in the virtual machine's settings.")
+        }
+        state.requests.append(rule)
+        publish()
+        return false
     }
 
     func propose(_ rule: ServiceTunnel) async throws {
@@ -146,7 +182,11 @@ final class TunnelGuestService: GuestService {
             guard rule.isEnabled, rule.canAdd(to: state.rules), rule.canAdd(to: state.requests) else {
                 throw TunnelError("That listener is already mapped or the mapping is invalid.")
             }
-            state.requests.append(rule)
+            if acceptProposal(rule) {
+                reconcile(permittedRules())
+            } else {
+                state.requests.append(rule)
+            }
             publish()
         case let .open(id, nonce) where !isHost && state.available:
             let rule = try authorized(id, listensOnHost: true)
@@ -336,7 +376,8 @@ extension HostGuestSession {
     public func configureTunnels(
         device: VZVirtioSocketDevice,
         approvedRules: @escaping @MainActor () -> [ServiceTunnel],
-        policy: @escaping @MainActor () -> ServiceTunnelPolicy
+        policy: @escaping @MainActor () -> ServiceTunnelPolicy,
+        acceptProposal: @escaping @MainActor (ServiceTunnel) -> Bool = { _ in false }
     ) {
         engine.tunnels.connect = { port in
             // A paused guest may never answer a connect attempt. Let revocation
@@ -360,8 +401,12 @@ extension HostGuestSession {
         }
         engine.tunnels.approvedRules = approvedRules
         engine.tunnels.policy = policy
+        engine.tunnels.acceptProposal = acceptProposal
         engine.tunnels.reloadConfiguration()
     }
     public func reloadTunnels() { engine.tunnels.reloadConfiguration() }
     public func declineTunnel(_ id: UUID) { engine.tunnels.decline(id) }
+    /// Asks for a tunnel that the user gets to review in the app unless the host's review level lets it start right away.
+    /// Returns whether it started. Throws when the guest app isn't connected or the tunnel can't be used.
+    public func proposeTunnel(_ tunnel: ServiceTunnel) throws -> Bool { try engine.tunnels.proposeFromHost(tunnel) }
 }

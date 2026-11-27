@@ -110,7 +110,7 @@ struct ManagedDevicePreferencesTests {
             "DisableSharedFolders", "DisableGuestApp", "DisableUSBPassthrough",
             "DisableBridgedNetworking", "DisableMicrophoneInput",
             "DisableProvisioningRemoteLogin", "DisableProvisioningAutomaticLogin",
-            "DisableDeveloperFeatures",
+            "DisableDeveloperFeatures", "DisableCommandLineAccess",
             "DisableServiceTunnels", "DisableServiceTunnelsToHostServices", "DisableServiceTunnelsToGuestServices",
             "DisableServiceTunnelUnixSockets", "DisableServiceTunnelTCPPorts", "DisableServiceTunnelRequests"
         ]
@@ -119,12 +119,14 @@ struct ManagedDevicePreferencesTests {
             "ServiceTunnelAllowedHostPorts", "ServiceTunnelDeniedHostPorts",
             "ServiceTunnelAllowedHostSocketPaths", "ServiceTunnelDeniedHostSocketPaths"
         ]
-        #expect(Set(schema.preferences.map(\.key)) == expectedKeys.union(listKeys))
+        /// Asks for more review rather than switching something off, and has no default either.
+        let levelKeys: Set<String> = ["ServiceTunnelMinimumReviewLevel"]
+        #expect(Set(schema.preferences.map(\.key)) == expectedKeys.union(listKeys).union(levelKeys))
         let declarations: [VirtualBuddyManagedPreferences.Preference<Bool>] = [
             .disableSharedFolders, .disableGuestApp, .disableUSBPassthrough,
             .disableBridgedNetworking, .disableMicrophoneInput,
             .disableProvisioningRemoteLogin, .disableProvisioningAutomaticLogin,
-            .disableDeveloperFeatures,
+            .disableDeveloperFeatures, .disableCommandLineAccess,
             .disableServiceTunnels, .disableServiceTunnelsToHostServices, .disableServiceTunnelsToGuestServices,
             .disableServiceTunnelUnixSockets, .disableServiceTunnelTCPPorts, .disableServiceTunnelRequests
         ]
